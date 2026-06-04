@@ -1,0 +1,85 @@
+# Deploy spendrift-backend to the production VPS when master changes.
+#
+# Required GitHub repository secrets:
+#   SSH_HOST              — e.g. 34.14.163.195
+#   SSH_USER              — e.g. punase.ronak99
+#   SSH_PRIVATE_KEY       — private key for SSH (full PEM, including newlines)
+#   SSH_GIT_ROOT          — directory containing .git (monorepo root on VM)
+#   SSH_DEPLOY_PATH       — directory with spendrift-backend package.json
+#
+# Optional secrets:
+#   PUBLIC_HEALTH_URL     — e.g. https://api.spendrift.ronakpunase.dev/v1/health
+#
+# One-time server setup: see spendrift-backend/docs/DEPLOYMENT.md § CI/CD
+
+name: Deploy spendrift-backend
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "spendrift-backend/**"
+      - ".github/workflows/deploy-spendrift-backend.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-spendrift-backend
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          command_timeout: 10m
+          envs: GIT_ROOT,DEPLOY_PATH,BRANCH,PORT,PUBLIC_HEALTH_URL,SYSTEMD_SERVICE
+          env:
+            GIT_ROOT: ${{ secrets.SSH_GIT_ROOT }}
+            DEPLOY_PATH: ${{ secrets.SSH_DEPLOY_PATH }}
+            BRANCH: master
+            PORT: "8080"
+            SYSTEMD_SERVICE: spendrift-backend
+            PUBLIC_HEALTH_URL: ${{ secrets.PUBLIC_HEALTH_URL }}
+          script: |
+            set -euo pipefail
+
+            if [[ -z "${GIT_ROOT}" || -z "${DEPLOY_PATH}" ]]; then
+              echo "Missing SSH_GIT_ROOT or SSH_DEPLOY_PATH repository secrets." >&2
+              exit 1
+            fi
+
+            echo "==> git pull (${BRANCH}) in ${GIT_ROOT}"
+            cd "${GIT_ROOT}"
+            git fetch origin "${BRANCH}"
+            git checkout "${BRANCH}"
+            git pull --ff-only origin "${BRANCH}"
+
+            echo "==> npm ci && build in ${DEPLOY_PATH}"
+            cd "${DEPLOY_PATH}"
+            npm ci
+            npm run build
+
+            echo "==> restart ${SYSTEMD_SERVICE}"
+            sudo systemctl restart "${SYSTEMD_SERVICE}"
+            sudo systemctl is-active --quiet "${SYSTEMD_SERVICE}"
+
+            echo "==> local health check"
+            curl -sf "http://127.0.0.1:${PORT}/v1/health"
+            echo ""
+
+            if [[ -n "${PUBLIC_HEALTH_URL}" ]]; then
+              echo "==> public health check"
+              curl -sf "${PUBLIC_HEALTH_URL}"
+              echo ""
+            fi
+
+            echo "Deploy finished successfully."
