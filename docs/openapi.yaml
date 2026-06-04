@@ -1,0 +1,539 @@
+openapi: 3.0.3
+info:
+  title: Spendrift AI Proxy API
+  version: 1.0.0
+  description: |
+    Public HTTP contract for the Spendrift AI backend proxy.
+
+    Offloads voice transaction parsing and bank statement PDF parsing from the iOS app
+    so model names, prompts, and provider API keys can be changed server-side without
+    an App Store release.
+
+    Companion implementation spec: `BACKEND_AI_PROXY_SPEC.md`
+
+    **Important:** Voice business failures (`status: "error"`) are returned with HTTP 200.
+    Only infrastructure/upstream failures use 4xx/5xx with the `ApiError` envelope.
+
+servers:
+  - url: https://api.spendrift.example.com
+    description: Production
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Health
+    description: Service liveness and configuration introspection
+  - name: Voice
+    description: Spoken expense/income → structured transaction JSON
+  - name: Statements
+    description: Bank statement PDF → transaction line items
+
+security:
+  - BearerAuth: []
+
+paths:
+  /v1/health:
+    get:
+      operationId: getHealth
+      tags: [Health]
+      summary: Health check
+      description: |
+        Deployment probe. Returns service status and configured upstream model names.
+        Does not expose API keys or provider account details.
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+                version: 1.0.0
+                models:
+                  voice: gpt-audio-mini
+                  statement: gpt-4o
+
+  /v1/voice/parse-transaction:
+    post:
+      operationId: parseVoiceTransaction
+      tags: [Voice]
+      summary: Parse voice recording into a transaction
+      description: |
+        Converts a short spoken expense or income description (WAV audio) into structured
+        transaction JSON matching iOS `OpenAIVoiceTransactionPayload`.
+
+        **Client constraints (enforced on iOS before upload):**
+        - Format: WAV, linear PCM, 44.1 kHz, mono, 16-bit LE
+        - Duration: 2–30 seconds
+
+        **Response semantics:**
+        - HTTP 200 + `status: "success"` → parsed transaction
+        - HTTP 200 + `status: "error"` → model could not parse (business failure)
+        - HTTP 502 → upstream AI failure or non-JSON model output
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/VoiceParseMultipartRequest"
+            encoding:
+              audio:
+                contentType: audio/wav
+            examples:
+              groceries:
+                summary: Multipart voice request
+                value:
+                  categories: '[{"name":"Food","type":"expense"},{"name":"Salary","type":"income"}]'
+                  clientTodayIso: "2026-06-04T09:15:00"
+                  timezone: Asia/Kolkata
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VoiceParseJsonRequest"
+            examples:
+              groceries:
+                summary: JSON voice request (base64 audio)
+                value:
+                  audioBase64: UklGRiQAAABXQVZFZm10IBAAAAABAAEA...
+                  audioFormat: wav
+                  clientTodayIso: "2026-06-04T09:15:00"
+                  timezone: Asia/Kolkata
+                  categories:
+                    - name: Food
+                      type: expense
+                    - name: Salary
+                      type: income
+      responses:
+        "200":
+          description: |
+            Model returned a valid voice payload. Check `status` for success vs business error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceParseResponse"
+              examples:
+                success:
+                  summary: Parsed expense
+                  value:
+                    status: success
+                    transaction:
+                      notes: Groceries
+                      amount: 450
+                      date: "2026-06-04T09:15:00"
+                      transactionType: expense
+                      category: Food
+                modelError:
+                  summary: Model business failure (still HTTP 200)
+                  value:
+                    status: error
+                    reason: No clear speech describing a transaction in the audio.
+        "400":
+          description: Invalid request (missing audio, bad categories, unsupported format)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                error:
+                  code: invalid_request
+                  message: audio is required
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                error:
+                  code: unauthorized
+                  message: Invalid or missing bearer token
+        "413":
+          description: Audio payload too large
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                error:
+                  code: payload_too_large
+                  message: Audio exceeds maximum allowed size
+        "502":
+          description: Upstream AI provider error or invalid model JSON output
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              examples:
+                upstreamFailed:
+                  value:
+                    error:
+                      code: upstream_failed
+                      message: OpenAI request failed
+                      details: "status 429: rate limit exceeded"
+                invalidModelJson:
+                  value:
+                    error:
+                      code: invalid_model_json
+                      message: Model returned non-JSON text
+                      details: "Here is your transaction..."
+                missingOutput:
+                  value:
+                    error:
+                      code: missing_model_output
+                      message: Model returned empty content
+        "504":
+          description: Upstream AI provider timeout
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                error:
+                  code: upstream_timeout
+                  message: Upstream request timed out
+
+  /v1/statements/parse:
+    post:
+      operationId: parseBankStatement
+      tags: [Statements]
+      summary: Extract transactions from a bank statement PDF
+      description: |
+        Parses a bank statement PDF and returns transaction line items matching iOS
+        `OpenAIStatementPayload`.
+
+        **Client constraints (enforced on iOS before upload):**
+        - Format: PDF (`application/pdf`)
+        - Max size: 20 MB (20971520 bytes)
+        - Password-protected PDFs must be unlocked client-side before upload
+
+        Rows with `amount <= 0` may be filtered server-side before returning.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/StatementParseMultipartRequest"
+            encoding:
+              pdf:
+                contentType: application/pdf
+            examples:
+              hdfcStatement:
+                summary: Bank statement upload
+                value:
+                  filename: hdfc_mar2026.pdf
+      responses:
+        "200":
+          description: Parsed statement transactions (may be empty array)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatementParseResponse"
+              examples:
+                multipleRows:
+                  summary: Statement with transactions
+                  value:
+                    transactions:
+                      - notes: NEFT-Salary
+                        amount: 50000
+                        date: "2026-03-01"
+                        transactionType: income
+                      - notes: Swiggy Order
+                        amount: 350
+                        date: "2026-03-02"
+                        transactionType: expense
+                      - notes: ATM Withdrawal
+                        amount: 5000
+                        date: "2026-03-05"
+                        transactionType: expense
+                empty:
+                  summary: No transactions found
+                  value:
+                    transactions: []
+        "400":
+          description: Invalid request (missing PDF, not a PDF)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                error:
+                  code: invalid_request
+                  message: pdf file is required
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "413":
+          description: PDF exceeds 20 MB limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                error:
+                  code: payload_too_large
+                  message: PDF exceeds maximum allowed size of 20971520 bytes
+        "502":
+          description: Upstream AI provider error or invalid model JSON output
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "504":
+          description: Upstream AI provider timeout
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token
+      description: |
+        Spendrift client token issued by the backend operator.
+        Example: `Authorization: Bearer spendrift_dev_token`
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, version, models]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+          example: ok
+        version:
+          type: string
+          example: 1.0.0
+        models:
+          type: object
+          required: [voice, statement]
+          properties:
+            voice:
+              type: string
+              description: Configured upstream model for voice parsing
+              example: gpt-audio-mini
+            statement:
+              type: string
+              description: Configured upstream model for statement parsing
+              example: gpt-4o
+
+    CategoryInput:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          example: Food
+        type:
+          $ref: "#/components/schemas/CategoryType"
+
+    CategoryType:
+      type: string
+      enum: [expense, income]
+      description: Matches iOS `TransactionType` for user categories
+
+    VoiceTransactionType:
+      type: string
+      enum: [expense, income]
+      description: Direction of the parsed voice transaction
+
+    StatementTransactionType:
+      type: string
+      enum: [expense, income, none]
+      description: Direction of a statement line item
+
+    VoiceParseMultipartRequest:
+      type: object
+      required: [audio, categories]
+      properties:
+        audio:
+          type: string
+          format: binary
+          description: WAV file (44.1 kHz mono 16-bit PCM linear)
+        categories:
+          type: string
+          description: |
+            JSON-encoded array of `CategoryInput` objects.
+            Example: `[{"name":"Food","type":"expense"}]`
+        clientTodayIso:
+          type: string
+          description: |
+            Device-local datetime for "today/yesterday" resolution.
+            Format: `yyyy-MM-dd'T'HH:mm:ss` (no timezone suffix).
+          example: "2026-06-04T09:15:00"
+        timezone:
+          type: string
+          description: IANA timezone identifier used when `clientTodayIso` is omitted
+          example: Asia/Kolkata
+
+    VoiceParseJsonRequest:
+      type: object
+      required: [audioBase64, audioFormat, categories]
+      properties:
+        audioBase64:
+          type: string
+          format: byte
+          description: Base64-encoded WAV bytes (no data-URI prefix)
+        audioFormat:
+          type: string
+          enum: [wav]
+        categories:
+          type: array
+          minItems: 0
+          items:
+            $ref: "#/components/schemas/CategoryInput"
+        clientTodayIso:
+          type: string
+          example: "2026-06-04T09:15:00"
+        timezone:
+          type: string
+          example: Asia/Kolkata
+
+    VoiceTransaction:
+      type: object
+      required: [notes, amount, date, transactionType]
+      description: Matches iOS `OpenAIVoiceTransaction`
+      properties:
+        notes:
+          type: string
+          example: Groceries
+        amount:
+          type: number
+          exclusiveMinimum: 0
+          description: Always positive; sign is encoded in `transactionType`
+          example: 450
+        date:
+          type: string
+          description: ISO 8601 datetime, e.g. `YYYY-MM-DDTHH:MM:SS`
+          example: "2026-06-04T09:15:00"
+        transactionType:
+          $ref: "#/components/schemas/VoiceTransactionType"
+        category:
+          type: string
+          nullable: true
+          description: Best matching category name from request list, or null
+          example: Food
+
+    VoiceParseSuccessResponse:
+      type: object
+      required: [status, transaction]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        transaction:
+          $ref: "#/components/schemas/VoiceTransaction"
+        reason:
+          type: string
+          nullable: true
+          description: Must be null or omitted on success
+
+    VoiceParseErrorResponse:
+      type: object
+      required: [status, reason]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        reason:
+          type: string
+          example: No clear speech describing a transaction in the audio.
+        transaction:
+          type: object
+          nullable: true
+          description: Must be null or omitted on error
+
+    VoiceParseResponse:
+      description: |
+        Matches iOS `OpenAIVoiceTransactionPayload`.
+        Discriminate on `status`: `success` includes `transaction`; `error` includes `reason`.
+      oneOf:
+        - $ref: "#/components/schemas/VoiceParseSuccessResponse"
+        - $ref: "#/components/schemas/VoiceParseErrorResponse"
+      discriminator:
+        propertyName: status
+        mapping:
+          success: "#/components/schemas/VoiceParseSuccessResponse"
+          error: "#/components/schemas/VoiceParseErrorResponse"
+
+    StatementParseMultipartRequest:
+      type: object
+      required: [pdf]
+      properties:
+        pdf:
+          type: string
+          format: binary
+          description: Bank statement PDF (max 20971520 bytes)
+        filename:
+          type: string
+          description: Original filename for upstream upload naming
+          example: hdfc_mar2026.pdf
+
+    StatementTransaction:
+      type: object
+      required: [notes, amount, date, transactionType]
+      description: Matches iOS `OpenAIStatementTransaction`
+      properties:
+        notes:
+          type: string
+          description: Transaction description/narration from the statement
+          example: UPI-SWIGGY
+        amount:
+          type: number
+          exclusiveMinimum: 0
+          description: Always positive; direction is in `transactionType`
+          example: 412
+        date:
+          type: string
+          description: ISO 8601 date, prefer `YYYY-MM-DD`
+          example: "2026-03-18"
+        transactionType:
+          $ref: "#/components/schemas/StatementTransactionType"
+
+    StatementParseResponse:
+      type: object
+      required: [transactions]
+      description: Matches iOS `OpenAIStatementPayload`
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatementTransaction"
+
+    ApiErrorBody:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - invalid_request
+            - unauthorized
+            - payload_too_large
+            - upstream_failed
+            - upstream_timeout
+            - missing_model_output
+            - invalid_model_json
+          example: upstream_failed
+        message:
+          type: string
+          example: OpenAI request failed
+        details:
+          type: string
+          description: Optional upstream body or internal diagnostic (truncate in logs)
+          example: "status 429: rate limit exceeded"
+
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ApiErrorBody"
