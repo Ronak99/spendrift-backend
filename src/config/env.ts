@@ -24,6 +24,7 @@ const envSchema = z.object({
   OPENAI_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
   VOICE_MODEL: z.string().min(1).default("gpt-audio-mini"),
   STATEMENT_MODEL: z.string().min(1).default("gpt-4o"),
+  POSTHOG_HOST: z.string().url().default("https://us.i.posthog.com"),
   UPSTREAM_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   MAX_PDF_BYTES: z.coerce.number().int().positive().default(20_971_520),
   MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(3_000_000),

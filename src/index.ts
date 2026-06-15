@@ -1,12 +1,21 @@
 import express from "express";
 import { env } from "./config/env.js";
 import { errorHandler } from "./middleware/errorHandler.js";
+import { requestLogger } from "./middleware/requestLogger.js";
 import { requireAuth } from "./middleware/auth.js";
 import { healthRouter } from "./routes/health.js";
 import { voiceRouter } from "./routes/voice.js";
 import { statementsRouter } from "./routes/statements.js";
+import { ingestRouter } from "./routes/ingest.js";
 
 const app = express();
+
+app.use(requestLogger);
+
+// Analytics ingestion proxy: raw passthrough to PostHog. Mounted before JSON
+// body parsing and without bearer auth (PostHog authenticates via the public
+// project key carried in the request body).
+app.use("/ingest", ingestRouter);
 
 app.use(
   express.json({

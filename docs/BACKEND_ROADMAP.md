@@ -1,56 +1,73 @@
 # Spendrift Backend — Roadmap & Future Prospects
 
-> **Context:** The iOS app currently calls OpenAI directly with an API key embedded in the app bundle. As downloads grow (driven by YouTube traction), this creates cost and security risk. The backend proxy is the foundation for safe scaling and future monetization.
+> **Context:** All Spendrift AI traffic is proxied through this backend. The iOS app never calls OpenAI directly and does not ship an OpenAI API key — only `SpendriftBackendBaseURL` and `SpendriftBackendClientToken` in `Info.plist`. OpenAI credentials live server-side in `.env` (`OPENAI_API_KEY`).
 >
 > **Last updated:** June 15, 2026
 
 ---
 
+## Current Architecture (confirmed)
+
+| Layer | Behavior |
+|-------|----------|
+| **iOS** | `OpenAIVoiceTransactionService` and `OpenAIBankStatementService` delegate to `SpendriftBackendClient` |
+| **Backend** | `POST /v1/voice/parse-transaction` and `POST /v1/statements/parse` call OpenAI via `openaiClient.ts` |
+| **Secrets** | `OPENAI_API_KEY` in backend `.env` only; never in git or the app bundle |
+| **Auth** | Protected routes require `Authorization: Bearer {SPENDRIFT_CLIENT_TOKENS}`; `GET /v1/health` is public |
+
+There is no `OpenAIClient.swift` in the app target. Legacy type names (`OpenAIVoiceTransactionPayload`, etc.) remain on iOS for decoding only — they describe response shapes, not direct OpenAI usage.
+
+Full contract: `BACKEND_AI_PROXY_SPEC.md`.
+
+---
+
 ## Why the Backend Matters Now
+
+Phase 1 (the proxy) is **done in code**. Remaining risks are operational and scaling-related:
 
 | Risk (today) | What happens as downloads grow |
 |--------------|----------------------------------|
-| OpenAI key in downloadable binary | Key can be extracted and abused |
-| No per-user limits | Every voice/PDF user costs money; viral video = surprise bill |
-| Model/prompt changes require App Store release | Slow iteration on AI quality and cost |
-| No cost visibility | Can't tie spend to features or users |
+| No per-device rate limits | Every voice/PDF user costs money; viral video = surprise bill |
+| No global spend cap | A bug, abuse, or traffic spike can run up unbounded OpenAI spend |
+| Limited cost visibility | Can't tie spend to features, devices, or app versions |
+| Legacy App Store builds | Older binaries that embedded an OpenAI key may still be in the wild until users upgrade |
 
-The backend proxy addresses all four. It is **urgent**, not optional — see also `Spendrift/docs/NEXT_STEPS_STRATEGY.md` for the app-side plan.
+The backend is the foundation for limits, observability, and monetization — see also `Spendrift/docs/NEXT_STEPS_STRATEGY.md`.
 
 ---
 
-## Phase 1 — Ship the AI Proxy (current priority)
+## Phase 1 — AI Proxy ✅ (complete)
 
-**Goal:** Move all third-party AI traffic off the device. Full contract in `BACKEND_AI_PROXY_SPEC.md`.
+**Goal:** Move all third-party AI traffic off the device.
 
-### Endpoints to complete
+### Endpoints (live)
 
-| Route | Replaces | Upstream model |
+| Route | iOS caller | Upstream model |
 |-------|----------|----------------|
-| `POST /voice/parse` | `OpenAIVoiceTransactionService` | `gpt-audio-mini` |
-| `POST /statements/parse` | `OpenAIBankStatementService` | `gpt-4o` |
-| `GET /health` | — | — |
+| `POST /v1/voice/parse-transaction` | `SpendriftBackendClient.parseVoiceTransaction` | `gpt-audio-mini` |
+| `POST /v1/statements/parse` | `SpendriftBackendClient.parseStatement` | `gpt-4o` |
+| `GET /v1/health` | `SpendriftBackendClient.fetchHealth` | — |
 
-### Must-haves before iOS cutover
+### Completed
 
-- [ ] OpenAI API key stored server-side only (`OPENAI_API_KEY` in `.env`)
-- [ ] Request/response shapes match iOS decoders (`OpenAIVoiceTransactionPayload`, `OpenAIStatementPayload`)
-- [ ] Prompt assembly matches current iOS behavior (`basePrompt.md`, category blocks, date context)
-- [ ] Error mapping to stable HTTP status codes (see spec §10)
-- [ ] Deploy to production per `DEPLOYMENT.md`
-- [ ] Rotate/revoke the key that was in the iOS bundle after cutover
+- [x] OpenAI API key stored server-side only (`OPENAI_API_KEY` in `.env`)
+- [x] iOS routes voice and statement AI through `SpendriftBackendClient` (no direct OpenAI calls)
+- [x] `OpenAIApiKey` removed from `Info.plist` / `AppSecrets`; app uses backend URL + client token
+- [x] Request/response shapes match iOS decoders (`OpenAIVoiceTransactionPayload`, `OpenAIStatementPayload`)
+- [x] Prompt assembly on backend (`basePrompt.md`, category blocks, date context)
+- [x] Error mapping to stable HTTP status codes (see spec §10)
+- [x] Deploy path documented in `DEPLOYMENT.md`
 
-### iOS integration (after proxy is live)
+### Remaining ops (if not already done)
 
-- Point voice and statement services at proxy base URL
-- Remove `OpenAIApiKey` from `Info.plist` / `AppSecrets`
-- Ship App Store update
+- [ ] Confirm all App Store users are on a backend-proxy build
+- [ ] Rotate/revoke any OpenAI key that was ever embedded in a shipped iOS binary
 
 ---
 
-## Phase 2 — Rate Limiting & Cost Control
+## Phase 2 — Rate Limiting & Cost Control (current priority)
 
-**Why:** Without limits, a single viral video or a scraped API key can generate unbounded OpenAI spend.
+**Why:** Without limits, growth or abuse can generate unbounded OpenAI spend even though the key is no longer in the app.
 
 ### Recommended approach
 
@@ -59,7 +76,7 @@ The backend proxy addresses all four. It is **urgent**, not optional — see als
 | **Per-device identity** | iOS sends a stable anonymous device ID (e.g. `identifierForVendor` or generated UUID in Keychain) |
 | **Rate limits** | Cap voice parses and statement imports per device per day/month |
 | **Global circuit breaker** | Hard daily spend cap on the server; return 503 when exceeded |
-| **Auth** | Simple API key or signed requests from the app (see spec §4) |
+| **Auth** | Client token already required (see spec §4); extend with per-device tracking |
 
 ### Suggested initial limits (tune after analytics)
 
@@ -78,7 +95,7 @@ These become enforceable once StoreKit monetization lands on iOS — the backend
 
 ### Logging (server-side)
 
-- Request count by endpoint (`/voice/parse`, `/statements/parse`)
+- Request count by endpoint (`/v1/voice/parse-transaction`, `/v1/statements/parse`)
 - Upstream latency and error rate
 - Estimated cost per request (token/audio duration heuristics)
 - Per-device usage counters (for rate limit enforcement)
@@ -116,7 +133,7 @@ No need to build this until analytics show which AI feature has pull — but **d
 
 ## Phase 5 — Future Prospects (beyond proxy)
 
-These are **not** urgent but are natural extensions once Phases 1–3 are stable.
+These are **not** urgent but are natural extensions once Phases 2–3 are stable.
 
 | Capability | Benefit |
 |------------|---------|
@@ -139,9 +156,9 @@ These are **not** urgent but are natural extensions once Phases 1–3 are stable
 ## Priority Summary
 
 ```
-Phase 1: AI proxy (ship now)
+Phase 1: AI proxy ✅ (complete)
     ↓
-Phase 2: Rate limits + per-device quotas
+Phase 2: Rate limits + per-device quotas (current)
     ↓
 Phase 3: Cost logging + alerts
     ↓
