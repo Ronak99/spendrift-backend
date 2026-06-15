@@ -10,6 +10,10 @@ import { ingestRouter } from "./routes/ingest.js";
 
 const app = express();
 
+// Trust one reverse-proxy hop (Caddy in production) so req.ip is the end-user
+// address from X-Forwarded-For, not 127.0.0.1 from the local reverse_proxy.
+app.set("trust proxy", 1);
+
 app.use(requestLogger);
 
 // Analytics ingestion proxy: raw passthrough to PostHog. Mounted before JSON

@@ -1,5 +1,6 @@
 import { Router, raw } from "express";
 import { env } from "../config/env.js";
+import { resolveClientIp } from "../utils/clientIp.js";
 
 /**
  * Reverse proxy for PostHog analytics ingestion.
@@ -14,8 +15,11 @@ import { env } from "../config/env.js";
  */
 export const ingestRouter = Router();
 
-// Buffer the raw body for every content type so it can be forwarded verbatim
-// (PostHog batches may be gzip-compressed JSON).
+// Buffer the body for every content type. posthog-ios always gzips its /batch/
+// body and sends `Content-Encoding: gzip`; `inflate: true` (the default) lets
+// body-parser transparently decompress it so `req.body` is plain JSON bytes.
+// We then strip the `content-encoding` header below before forwarding, so the
+// bytes and the header stay consistent (PostHog accepts uncompressed JSON).
 ingestRouter.use(raw({ type: () => true, limit: "25mb" }));
 
 const HOP_BY_HOP = new Set([
@@ -25,6 +29,14 @@ const HOP_BY_HOP = new Set([
   "transfer-encoding",
   "keep-alive",
   "upgrade",
+  // body-parser decompresses the request body, so the original encoding/length
+  // no longer describe the forwarded bytes. Drop both and let fetch recompute
+  // content-length from the (now plain JSON) buffer.
+  "content-encoding",
+  // Set explicitly below so PostHog always sees the end-user IP, not an
+  // intermediate proxy hop (Caddy → Node is 127.0.0.1 in production).
+  "x-forwarded-for",
+  "x-real-ip",
 ]);
 
 ingestRouter.use(async (req, res, next) => {
@@ -38,6 +50,15 @@ ingestRouter.use(async (req, res, next) => {
       if (value === undefined) continue;
       if (HOP_BY_HOP.has(key.toLowerCase())) continue;
       headers[key] = Array.isArray(value) ? value.join(", ") : value;
+    }
+
+    // PostHog geoip reads X-Forwarded-For / X-Real-IP on the ingest request.
+    // Behind Caddy, socket.remoteAddress is 127.0.0.1 — resolve the real client
+    // from req.ip (trust proxy) or the leftmost X-Forwarded-For entry.
+    const clientIp = resolveClientIp(req);
+    if (clientIp) {
+      headers["x-forwarded-for"] = clientIp;
+      headers["x-real-ip"] = clientIp;
     }
 
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
