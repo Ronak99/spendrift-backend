@@ -6,6 +6,7 @@ import { requireAuth } from "./middleware/auth.js";
 import { healthRouter } from "./routes/health.js";
 import { voiceRouter } from "./routes/voice.js";
 import { statementsRouter } from "./routes/statements.js";
+import { receiptsRouter } from "./routes/receipts.js";
 import { ingestRouter } from "./routes/ingest.js";
 
 const app = express();
@@ -31,6 +32,7 @@ app.use("/v1", healthRouter);
 
 app.use("/v1", requireAuth, voiceRouter);
 app.use("/v1", requireAuth, statementsRouter);
+app.use("/v1", requireAuth, receiptsRouter);
 
 app.use(errorHandler);
 

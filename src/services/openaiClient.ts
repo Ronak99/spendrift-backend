@@ -10,12 +10,20 @@ import {
   buildVoiceSystemPrompt,
   getVoiceUserInstruction,
 } from "./voicePrompt.js";
+import {
+  buildReceiptSystemPrompt,
+  getReceiptUserInstruction,
+} from "./receiptPrompt.js";
 import type { CategoryInput } from "../types/voice.js";
 import {
   statementParseResponseSchema,
   type StatementParseResponse,
 } from "../types/statement.js";
 import { voiceParseResponseSchema, type VoiceParseResponse } from "../types/voice.js";
+import {
+  receiptParseResponseSchema,
+  type ReceiptParseResponse,
+} from "../types/receipt.js";
 import { sanitizeStatementFilename } from "../utils/filename.js";
 
 async function openaiFetch(
@@ -136,6 +144,53 @@ export async function parseVoiceTransaction(
   }
 
   return parseModelJson(content, voiceParseResponseSchema);
+}
+
+export async function parseReceiptImage(
+  imageBuffer: Buffer,
+  mimeType: string,
+  categories: CategoryInput[],
+  options: { clientTodayIso?: string; timezone?: string },
+): Promise<ReceiptParseResponse> {
+  const systemPrompt = buildReceiptSystemPrompt(categories, options);
+  const imageBase64 = imageBuffer.toString("base64");
+  const dataUrl = `data:${mimeType};base64,${imageBase64}`;
+
+  const res = await openaiFetch("/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: env.RECEIPT_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: getReceiptUserInstruction() },
+            { type: "image_url", image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    await readUpstreamError(res);
+  }
+
+  const completion = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string | null } }>;
+  };
+
+  const content = completion.choices?.[0]?.message?.content?.trim();
+  if (!content) {
+    throw new ApiError(502, "missing_model_output", "Model returned empty content");
+  }
+
+  return parseModelJson(
+    stripMarkdownCodeFence(content),
+    receiptParseResponseSchema,
+  );
 }
 
 function extractResponsesOutputText(data: Record<string, unknown>): string {

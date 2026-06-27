@@ -10,6 +10,7 @@ healthRouter.get("/health", (_req, res) => {
     models: {
       voice: env.VOICE_MODEL,
       statement: env.STATEMENT_MODEL,
+      receipt: env.RECEIPT_MODEL,
     },
   });
 });

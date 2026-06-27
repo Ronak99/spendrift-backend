@@ -17,6 +17,7 @@
 5. [Global conventions](#5-global-conventions)
 6. [Endpoint: Parse voice transaction](#6-endpoint-parse-voice-transaction)
 7. [Endpoint: Parse bank statement PDF](#7-endpoint-parse-bank-statement-pdf)
+7b. [Endpoint: Parse receipt screenshot image](#7b-endpoint-parse-receipt-screenshot-image)
 8. [Endpoint: Health check (recommended)](#8-endpoint-health-check-recommended)
 9. [Environment variables & model configuration](#9-environment-variables--model-configuration)
 10. [Error mapping reference](#10-error-mapping-reference)
@@ -780,6 +781,159 @@ sequenceDiagram
 
 ---
 
+## 7b. Endpoint: Parse receipt screenshot image
+
+### Route
+
+```
+POST /v1/receipts/parse
+```
+
+### Purpose
+
+Read a receipt, bill, invoice, or payment-confirmation **screenshot** and extract a single
+structured transaction. Fields that cannot be determined from the image are returned as `null`
+and listed in `missingFields`, which the iOS client surfaces in its "missing fields" review
+sheet (the same `UpdateTransactionSheet` draft flow used by voice).
+
+**iOS equivalent:** `OpenAIReceiptTransactionService.parseReceipt(imageData:mimeType:categories:)`
+
+---
+
+### Request
+
+`multipart/form-data` only:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `image` | file | yes | Receipt image (JPEG, PNG, HEIC/HEIF, or WebP) |
+| `categories` | string (JSON) | yes | JSON array of `{ name, type }` category objects (same shape as voice) |
+| `clientTodayIso` | string | no | Device-local datetime; used to default the date when the receipt has none |
+| `timezone` | string | no | IANA timezone, used when `clientTodayIso` is omitted |
+
+#### Image constraints (enforced client-side; backend defensively checks)
+
+| Constraint | Value | iOS source |
+|------------|-------|------------|
+| Format | JPEG / PNG / HEIC / HEIF / WebP | `ReceiptCaptureView` picker + `ReceiptImagePreparer` |
+| Max size | 8 MB (`MAX_IMAGE_BYTES`) | `ReceiptImagePreparer` downscales/compresses first |
+
+Reject empty/non-image uploads with `400`, oversized images with `413`.
+
+---
+
+### Prompt assembly (server responsibility)
+
+Mirrors the voice prompt structure (`receiptPrompt.ts`):
+
+1. Static receipt base prompt (output format + extraction rules), with `{{TODAY_ISO}}` replaced.
+2. Runtime date block.
+3. Dynamic allowed-categories block (income + expense, sorted A→Z), identical to voice.
+
+The model is instructed to **never guess**: anything not legible becomes `null` and is added to
+`missingFields` (allowed names: `notes`, `amount`, `date`, `transactionType`, `category`).
+`transactionType` defaults to `expense` for receipts/bills.
+
+#### User instruction (fixed)
+
+```
+Read this receipt or transaction screenshot and extract the single expense (or income) it represents. Respond with only the JSON from your instructions. If a field cannot be determined from the image, set it to null and list it in missingFields. Never guess.
+```
+
+---
+
+### Upstream model call
+
+**Endpoint:** `POST https://api.openai.com/v1/chat/completions` (single call — no Files API)
+
+**Default model env:** `RECEIPT_MODEL=gpt-4o` (must be vision-capable)
+
+```json
+{
+  "model": "{RECEIPT_MODEL}",
+  "messages": [
+    { "role": "system", "content": "{assembled_system_prompt}" },
+    {
+      "role": "user",
+      "content": [
+        { "type": "text", "text": "{user_instruction}" },
+        { "type": "image_url", "image_url": { "url": "data:{mime};base64,{base64_image}" } }
+      ]
+    }
+  ]
+}
+```
+
+Read `choices[0].message.content`, strip markdown fences (defensive), `JSON.parse`, and validate
+against the receipt schema. Empty content → `502 missing_model_output`; non-JSON → `502 invalid_model_json`.
+
+---
+
+### Response `200`
+
+Returned directly as the HTTP body (matches iOS `OpenAIReceiptPayload`).
+
+#### Success shape
+
+```json
+{
+  "status": "success",
+  "transaction": {
+    "notes": "Blue Tokai Coffee",
+    "amount": 485,
+    "date": null,
+    "transactionType": "expense",
+    "category": "Food"
+  },
+  "missingFields": ["date"]
+}
+```
+
+| Field | Type | Rules |
+|-------|------|-------|
+| `status` | string | `"success"` |
+| `transaction.notes` | string \| null | Merchant/description; null if illegible |
+| `transaction.amount` | number \| null | Positive grand total, or null if illegible |
+| `transaction.date` | string \| null | ISO 8601, or null when absent on the receipt |
+| `transaction.transactionType` | string | `"expense"` or `"income"` |
+| `transaction.category` | string \| null | One of the provided category names, or null |
+| `missingFields` | string[] | Subset of `notes`/`amount`/`date`/`transactionType`/`category` |
+
+#### Model-level error shape (still HTTP 200)
+
+```json
+{
+  "status": "error",
+  "reason": "The image does not contain a legible receipt or transaction."
+}
+```
+
+iOS maps a `success` payload to a `VoiceTransactionDraft`; if required fields (amount, category,
+account) are missing it opens the review sheet with a hint listing the missing fields. A `status: error`
+payload routes to the same review sheet with the model's reason.
+
+---
+
+### Sequence diagram
+
+```mermaid
+sequenceDiagram
+    participant iOS as Spendrift iOS
+    participant API as Spendrift AI Backend
+    participant OAI as OpenAI API
+
+    iOS->>iOS: Pick/capture/share image, downscale ≤8MB
+    iOS->>API: POST /v1/receipts/parse<br/>image + categories + clientTodayIso
+    API->>API: Build system prompt (receipt base + categories + date)
+    API->>OAI: POST /v1/chat/completions<br/>model=gpt-4o, image_url
+    OAI-->>API: choices[0].message.content (JSON string)
+    API->>API: Strip fences, validate schema
+    API-->>iOS: OpenAIReceiptPayload (transaction + missingFields)
+    iOS->>iOS: Draft → create or "missing fields" review sheet
+```
+
+---
+
 ## 8. Endpoint: Health check (recommended)
 
 ```
@@ -794,7 +948,8 @@ GET /v1/health
   "version": "1.0.0",
   "models": {
     "voice": "gpt-audio-mini",
-    "statement": "gpt-4o"
+    "statement": "gpt-4o",
+    "receipt": "gpt-4o"
   }
 }
 ```
@@ -820,6 +975,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1   # optional override for Azure/proxy
 # Models — change without iOS update
 VOICE_MODEL=gpt-audio-mini
 STATEMENT_MODEL=gpt-4o
+RECEIPT_MODEL=gpt-4o
 
 # Timeouts (ms)
 UPSTREAM_TIMEOUT_MS=120000
@@ -827,6 +983,7 @@ UPSTREAM_TIMEOUT_MS=120000
 # Limits
 MAX_PDF_BYTES=20971520
 MAX_AUDIO_BYTES=3000000
+MAX_IMAGE_BYTES=8388608
 ```
 
 ### Switching models later
@@ -835,6 +992,7 @@ MAX_AUDIO_BYTES=3000000
 |---------|---------------------|-----------------|-------|
 | Voice | `gpt-audio-mini` | `VOICE_MODEL` | Replacement must support Chat Completions `input_audio` with `format: wav` |
 | Statement | `gpt-4o` | `STATEMENT_MODEL` | Replacement must support Responses API `input_file` via Files API |
+| Receipt | `gpt-4o` | `RECEIPT_MODEL` | Replacement must support Chat Completions `image_url` (vision) |
 
 If migrating to a non-OpenAI provider, keep the **Spendrift API contract stable** and adapt only the upstream client module.
 
@@ -1033,6 +1191,7 @@ Audio is silent or inaudible mumbling with no transaction details
 |-----------------|--------|----------------|-----------------|
 | `/v1/voice/parse-transaction` | POST | `POST /v1/chat/completions` | `gpt-audio-mini` |
 | `/v1/statements/parse` | POST | `POST /v1/files` → `POST /v1/responses` → `DELETE /v1/files/{id}` | `gpt-4o` |
+| `/v1/receipts/parse` | POST | `POST /v1/chat/completions` (vision `image_url`) | `gpt-4o` |
 | `/v1/health` | GET | none | — |
 
 ---

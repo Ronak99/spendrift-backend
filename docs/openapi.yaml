@@ -27,6 +27,8 @@ tags:
     description: Spoken expense/income → structured transaction JSON
   - name: Statements
     description: Bank statement PDF → transaction line items
+  - name: Receipts
+    description: Receipt/payment screenshot image → single structured transaction JSON
 
 security:
   - BearerAuth: []
@@ -54,6 +56,7 @@ paths:
                 models:
                   voice: gpt-audio-mini
                   statement: gpt-4o
+                  receipt: gpt-4o
 
   /v1/voice/parse-transaction:
     post:
@@ -289,6 +292,105 @@ paths:
               schema:
                 $ref: "#/components/schemas/ApiError"
 
+  /v1/receipts/parse:
+    post:
+      operationId: parseReceiptImage
+      tags: [Receipts]
+      summary: Parse a receipt/payment screenshot into a single transaction
+      description: |
+        Reads a receipt, bill, or payment-confirmation screenshot and returns a single
+        structured transaction matching iOS `OpenAIReceiptPayload`. Fields that cannot be
+        determined from the image are returned as `null` and listed in `missingFields`,
+        which the client surfaces in its "missing fields" review sheet.
+
+        **Client constraints (enforced on iOS before upload):**
+        - Format: JPEG, PNG, HEIC/HEIF, or WebP image
+        - Max size: 8 MB (8388608 bytes); the client downscales/compresses first
+
+        **Response semantics:**
+        - HTTP 200 + `status: "success"` → parsed transaction (+ `missingFields`)
+        - HTTP 200 + `status: "error"` → image was not a usable receipt (business failure)
+        - HTTP 502 → upstream AI failure or non-JSON model output
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/ReceiptParseMultipartRequest"
+            encoding:
+              image:
+                contentType: image/jpeg, image/png, image/heic, image/heif, image/webp
+            examples:
+              receipt:
+                summary: Receipt image upload
+                value:
+                  categories: '[{"name":"Food","type":"expense"},{"name":"Shopping","type":"expense"}]'
+                  clientTodayIso: "2026-06-27T14:15:00"
+                  timezone: Asia/Kolkata
+      responses:
+        "200":
+          description: |
+            Model returned a valid receipt payload. Check `status` for success vs business error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceiptParseResponse"
+              examples:
+                success:
+                  summary: Parsed receipt with a missing date
+                  value:
+                    status: success
+                    transaction:
+                      notes: Blue Tokai Coffee
+                      amount: 485
+                      date: null
+                      transactionType: expense
+                      category: Food
+                    missingFields: [date]
+                modelError:
+                  summary: Image was not a receipt (still HTTP 200)
+                  value:
+                    status: error
+                    reason: The image does not contain a legible receipt or transaction.
+        "400":
+          description: Invalid request (missing image, bad categories, unsupported image type)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                error:
+                  code: invalid_request
+                  message: image file is required
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "413":
+          description: Image exceeds 8 MB limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                error:
+                  code: payload_too_large
+                  message: Image exceeds maximum allowed size of 8388608 bytes
+        "502":
+          description: Upstream AI provider error or invalid model JSON output
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "504":
+          description: Upstream AI provider timeout
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -313,7 +415,7 @@ components:
           example: 1.0.0
         models:
           type: object
-          required: [voice, statement]
+          required: [voice, statement, receipt]
           properties:
             voice:
               type: string
@@ -322,6 +424,10 @@ components:
             statement:
               type: string
               description: Configured upstream model for statement parsing
+              example: gpt-4o
+            receipt:
+              type: string
+              description: Configured upstream model for receipt image parsing
               example: gpt-4o
 
     CategoryInput:
@@ -507,6 +613,105 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/StatementTransaction"
+
+    ReceiptParseMultipartRequest:
+      type: object
+      required: [image, categories]
+      properties:
+        image:
+          type: string
+          format: binary
+          description: Receipt image (JPEG, PNG, HEIC/HEIF, or WebP; max 8388608 bytes)
+        categories:
+          type: string
+          description: |
+            JSON-encoded array of `CategoryInput` objects.
+            Example: `[{"name":"Food","type":"expense"}]`
+        clientTodayIso:
+          type: string
+          description: |
+            Device-local datetime used to default the date when the receipt has none.
+            Format: `yyyy-MM-dd'T'HH:mm:ss` (no timezone suffix).
+          example: "2026-06-27T14:15:00"
+        timezone:
+          type: string
+          description: IANA timezone identifier used when `clientTodayIso` is omitted
+          example: Asia/Kolkata
+
+    ReceiptTransaction:
+      type: object
+      required: [notes, amount, date, transactionType, category]
+      description: Matches iOS `OpenAIReceiptTransaction`. Any field may be null when not legible.
+      properties:
+        notes:
+          type: string
+          nullable: true
+          example: Blue Tokai Coffee
+        amount:
+          type: number
+          exclusiveMinimum: 0
+          nullable: true
+          description: Grand total paid; positive, sign encoded in `transactionType`. Null if illegible.
+          example: 485
+        date:
+          type: string
+          nullable: true
+          description: ISO 8601 datetime from the receipt, or null if not present
+          example: "2026-06-27T14:15:00"
+        transactionType:
+          $ref: "#/components/schemas/VoiceTransactionType"
+        category:
+          type: string
+          nullable: true
+          description: Best matching category name from request list, or null
+          example: Food
+
+    ReceiptMissingField:
+      type: string
+      enum: [notes, amount, date, transactionType, category]
+
+    ReceiptParseSuccessResponse:
+      type: object
+      required: [status, transaction, missingFields]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        transaction:
+          $ref: "#/components/schemas/ReceiptTransaction"
+        missingFields:
+          type: array
+          description: Names of fields that could not be determined from the image
+          items:
+            $ref: "#/components/schemas/ReceiptMissingField"
+
+    ReceiptParseErrorResponse:
+      type: object
+      required: [status, reason]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        reason:
+          type: string
+          example: The image does not contain a legible receipt or transaction.
+        transaction:
+          type: object
+          nullable: true
+          description: Must be null or omitted on error
+
+    ReceiptParseResponse:
+      description: |
+        Matches iOS `OpenAIReceiptPayload`.
+        Discriminate on `status`: `success` includes `transaction` + `missingFields`; `error` includes `reason`.
+      oneOf:
+        - $ref: "#/components/schemas/ReceiptParseSuccessResponse"
+        - $ref: "#/components/schemas/ReceiptParseErrorResponse"
+      discriminator:
+        propertyName: status
+        mapping:
+          success: "#/components/schemas/ReceiptParseSuccessResponse"
+          error: "#/components/schemas/ReceiptParseErrorResponse"
 
     ApiErrorBody:
       type: object
