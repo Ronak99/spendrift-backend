@@ -12,7 +12,11 @@ import { env } from "../config/env.js";
  */
 export const sentryRouter = Router();
 
-sentryRouter.use(raw({ type: () => true, limit: "25mb" }));
+// Buffer the raw envelope body only for the envelope routes. This must NOT be a
+// router-level `use()`: the router is mounted at the app root (`app.use(sentryRouter)`),
+// so a catch-all body parser here would drain the request stream for every request
+// (including multipart uploads to /v1/*), breaking multer with "Unexpected end of form".
+const rawEnvelopeBody = raw({ type: () => true, limit: "25mb" });
 
 function envelopeUrlFromDsn(dsn: string): string {
   const parsed = parseSentryDsn(dsn);
@@ -175,5 +179,5 @@ async function handleEnvelope(
   }
 }
 
-sentryRouter.post("/api/:projectId/envelope/", handleEnvelope);
-sentryRouter.post("/", handleEnvelope);
+sentryRouter.post("/api/:projectId/envelope/", rawEnvelopeBody, handleEnvelope);
+sentryRouter.post("/", rawEnvelopeBody, handleEnvelope);
