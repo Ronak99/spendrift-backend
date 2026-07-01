@@ -103,7 +103,7 @@ These become enforceable once StoreKit monetization lands on iOS — the backend
 ### Optional integrations
 
 - Structured logs to a hosted service (e.g. Datadog, Axiom, or plain file + `journalctl` on VPS)
-- Sentry for backend exceptions (MCP available in dev environment)
+- **Sentry for backend exceptions and iOS crash tunnel** — implemented in `src/diagnostics.ts`, `src/routes/sentry.ts`; see `Spendrift/docs/articles/sentry-diagnostics-methodology.md` and `DEPLOYMENT.md` § Sentry diagnostics
 - Daily cost alert if OpenAI spend exceeds a threshold
 
 ---

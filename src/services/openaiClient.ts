@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { env } from "../config/env.js";
+import { addDiagnosticsBreadcrumb } from "../diagnostics.js";
 import { ApiError, truncateDetails } from "../utils/errors.js";
 import { stripMarkdownCodeFence } from "../utils/markdown.js";
 import {
@@ -28,11 +29,20 @@ import { sanitizeStatementFilename } from "../utils/filename.js";
 
 async function openaiFetch(
   path: string,
-  init: RequestInit & { timeoutMs?: number } = {},
+  init: RequestInit & { timeoutMs?: number; feature?: "voice" | "pdf" | "receipt"; model?: string } = {},
 ): Promise<Response> {
-  const { timeoutMs = env.UPSTREAM_TIMEOUT_MS, ...rest } = init;
+  const { timeoutMs = env.UPSTREAM_TIMEOUT_MS, feature, model, ...rest } = init;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  if (feature) {
+    addDiagnosticsBreadcrumb("upstream_request_started", {
+      feature,
+      stage: "upstream_request",
+      model: model ?? "unknown",
+      path,
+    });
+  }
 
   try {
     const url = `${env.OPENAI_BASE_URL.replace(/\/$/, "")}${path}`;
@@ -110,6 +120,8 @@ export async function parseVoiceTransaction(
 
   const res = await openaiFetch("/chat/completions", {
     method: "POST",
+    feature: "voice",
+    model: env.VOICE_MODEL,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: env.VOICE_MODEL,
@@ -158,6 +170,8 @@ export async function parseReceiptImage(
 
   const res = await openaiFetch("/chat/completions", {
     method: "POST",
+    feature: "receipt",
+    model: env.RECEIPT_MODEL,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: env.RECEIPT_MODEL,
@@ -236,6 +250,8 @@ export async function parseBankStatement(
 
   const uploadRes = await openaiFetch("/files", {
     method: "POST",
+    feature: "pdf",
+    model: env.STATEMENT_MODEL,
     body: form,
   });
 
@@ -256,6 +272,8 @@ export async function parseBankStatement(
   try {
     const responsesRes = await openaiFetch("/responses", {
       method: "POST",
+      feature: "pdf",
+      model: env.STATEMENT_MODEL,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: env.STATEMENT_MODEL,

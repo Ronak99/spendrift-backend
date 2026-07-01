@@ -1,6 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import { env } from "../config/env.js";
+import { addDiagnosticsBreadcrumb } from "../diagnostics.js";
 import { parseBankStatement } from "../services/openaiClient.js";
 import { ApiError } from "../utils/errors.js";
 
@@ -16,6 +17,11 @@ statementsRouter.post(
   upload.single("pdf"),
   async (req, res, next) => {
     try {
+      addDiagnosticsBreadcrumb("statement_parse_request", {
+        feature: "pdf",
+        stage: "parse",
+        route: "/v1/statements/parse",
+      });
       if (!req.file?.buffer?.length) {
         throw new ApiError(400, "invalid_request", "pdf file is required");
       }

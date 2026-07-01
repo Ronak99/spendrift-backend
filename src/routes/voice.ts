@@ -1,6 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import { env } from "../config/env.js";
+import { addDiagnosticsBreadcrumb } from "../diagnostics.js";
 import { parseVoiceTransaction } from "../services/openaiClient.js";
 import {
   categoriesSchema,
@@ -33,6 +34,11 @@ voiceRouter.post(
   upload.single("audio"),
   async (req, res, next) => {
     try {
+      addDiagnosticsBreadcrumb("voice_parse_request", {
+        feature: "voice",
+        stage: "parse",
+        route: "/v1/voice/parse-transaction",
+      });
       const contentType = req.headers["content-type"] ?? "";
 
       if (contentType.includes("application/json")) {

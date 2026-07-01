@@ -1,5 +1,6 @@
 import express from "express";
 import { env } from "./config/env.js";
+import { initDiagnostics, Sentry } from "./diagnostics.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { requireAuth } from "./middleware/auth.js";
@@ -8,6 +9,9 @@ import { voiceRouter } from "./routes/voice.js";
 import { statementsRouter } from "./routes/statements.js";
 import { receiptsRouter } from "./routes/receipts.js";
 import { ingestRouter } from "./routes/ingest.js";
+import { sentryRouter } from "./routes/sentry.js";
+
+initDiagnostics();
 
 const app = express();
 
@@ -22,6 +26,11 @@ app.use(requestLogger);
 // project key carried in the request body).
 app.use("/ingest", ingestRouter);
 
+// Sentry envelope tunnel for iOS diagnostics. SDK posts to /api/:projectId/envelope/
+// when the DSN host is rewritten to the backend. Legacy POST /sentry also works.
+app.use(sentryRouter);
+app.use("/sentry", sentryRouter);
+
 app.use(
   express.json({
     limit: Math.max(env.MAX_AUDIO_BYTES * 2, 5_000_000),
@@ -33,6 +42,10 @@ app.use("/v1", healthRouter);
 app.use("/v1", requireAuth, voiceRouter);
 app.use("/v1", requireAuth, statementsRouter);
 app.use("/v1", requireAuth, receiptsRouter);
+
+if (env.SENTRY_DSN) {
+  Sentry.setupExpressErrorHandler(app);
+}
 
 app.use(errorHandler);
 

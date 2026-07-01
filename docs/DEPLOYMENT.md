@@ -12,20 +12,41 @@ How to host `spendrift-backend` on a VPS (e.g. GCP) so the Spendrift iOS app can
 | Runtime          | Node.js **≥ 20**                                                   |
 | App              | Stateless Express proxy (`npm run build` → `node dist/index.js`)   |
 | Default port     | **8080** (`PORT` in `.env`) — bind on localhost only               |
-| Routes           | Under `/v1` (see `docs/openapi.yaml`)                              |
+| Routes           | Under `/v1` (see `docs/openapi.yaml`); plus `/ingest` (PostHog) and `/sentry` (Sentry tunnel, no auth) |
 | Health (no auth) | `GET /v1/health`                                                   |
-| Protected        | `POST /v1/voice/parse-transaction`, `POST /v1/statements/parse`    |
+| Protected        | `POST /v1/voice/parse-transaction`, `POST /v1/statements/parse`, `POST /v1/receipts/parse` |
 | Auth             | `Authorization: Bearer <token>` matching `SPENDRIFT_CLIENT_TOKENS` |
 | Data store       | None — secrets and OpenAI calls only                               |
 | Long requests    | Up to **120s** (`UPSTREAM_TIMEOUT_MS`) — configure proxy timeouts  |
+| Diagnostics      | Optional Sentry (`SENTRY_DSN`, `SENTRY_TUNNEL_DSN`) — see below    |
 
 
 The iOS app reads:
 
 - `SPENDRIFT_BACKEND_BASE_URL` → `SpendriftBackendBaseURL` in `Info.plist`
 - `SPENDRIFT_BACKEND_CLIENT_TOKEN` → `SpendriftBackendClientToken`
+- `SPENDRIFT_POSTHOG_API_KEY` → `SpendriftPostHogAPIKey` (analytics via `/ingest`)
+- `SPENDRIFT_SENTRY_DSN` → `SpendriftSentryDSN` (diagnostics via `/sentry` tunnel)
 
 Set these in `Spendrift/Spendrift/Configuration/DevSecrets.xcconfig` and `ProdSecrets.xcconfig` (gitignored).
+
+---
+
+## Sentry diagnostics (optional)
+
+The backend supports two Sentry integration points:
+
+| Route / env | Purpose |
+| ----------- | ------- |
+| `POST /sentry` | Tunnel for iOS Sentry envelopes (no bearer auth; DSN validated in envelope) |
+| `SENTRY_DSN` | Backend's own Sentry project for server exceptions |
+| `SENTRY_TUNNEL_DSN` | Must match the iOS app's `SPENDRIFT_SENTRY_DSN` when tunnel is enabled |
+| `SENTRY_ENVIRONMENT` | Defaults to `NODE_ENV` |
+| `SENTRY_RELEASE` | Release string shown in Sentry (e.g. git SHA at deploy) |
+
+Omit `SENTRY_DSN` to disable server-side Sentry entirely. Omit `SENTRY_TUNNEL_DSN` to reject iOS tunnel traffic with 503.
+
+Full methodology: `Spendrift/docs/articles/sentry-diagnostics-methodology.md`.
 
 ---
 

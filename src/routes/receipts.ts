@@ -1,6 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import { env } from "../config/env.js";
+import { addDiagnosticsBreadcrumb } from "../diagnostics.js";
 import { parseReceiptImage } from "../services/openaiClient.js";
 import { categoriesSchema } from "../types/voice.js";
 import { ApiError } from "../utils/errors.js";
@@ -38,6 +39,11 @@ receiptsRouter.post(
   upload.single("image"),
   async (req, res, next) => {
     try {
+      addDiagnosticsBreadcrumb("receipt_parse_request", {
+        feature: "receipt",
+        stage: "parse",
+        route: "/v1/receipts/parse",
+      });
       if (!req.file?.buffer?.length) {
         throw new ApiError(400, "invalid_request", "image file is required");
       }
