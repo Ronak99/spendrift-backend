@@ -12,7 +12,7 @@ export const receiptKnownFields = [
 export const receiptMissingFieldSchema = z.enum(receiptKnownFields);
 
 export const receiptTransactionSchema = z.object({
-  notes: z.string(),
+  notes: z.string().nullable(),
   amount: z.number().positive().nullable(),
   date: z.string().nullable(),
   transactionType: categoryTypeSchema,
