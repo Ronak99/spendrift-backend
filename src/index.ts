@@ -49,6 +49,7 @@ if (env.SENTRY_DSN) {
 
 app.use(errorHandler);
 
+// Start the HTTP server once all routes and middleware are registered.
 app.listen(env.PORT, () => {
   console.log(
     `Spendrift AI backend listening on http://localhost:${env.PORT} (${env.NODE_ENV})`,
