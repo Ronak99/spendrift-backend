@@ -22,6 +22,14 @@ const envSchema = z.object({
   SPENDRIFT_CLIENT_TOKENS: z.string().min(1),
   OPENAI_API_KEY: z.string().min(1),
   OPENAI_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
+  SUPABASE_URL: z.string().url(),
+  SUPABASE_ANON_KEY: z.string().min(1),
+  SUPABASE_PUBLISHABLE_KEY: z.string().min(1).optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    z.string().min(1).optional(),
+  ),
   VOICE_MODEL: z.string().min(1).default("gpt-audio-mini"),
   STATEMENT_MODEL: z.string().min(1).default("gpt-4o"),
   RECEIPT_MODEL: z.string().min(1).default("gpt-4o"),
