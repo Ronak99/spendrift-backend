@@ -6,9 +6,12 @@ import { env } from "../config/env.js";
 /**
  * Reverse proxy (tunnel) for Sentry envelope ingestion from the iOS app.
  *
- * The iOS SDK DSN host is rewritten to the backend base URL, so envelopes arrive
- * at `/api/:projectId/envelope/` (Sentry's standard ingest path). A legacy
+ * Production iOS builds set `options.tunnel` to `/ingest`, so envelopes arrive
+ * there with `Content-Type: application/x-sentry-envelope`. Older builds and
+ * the SDK's default path still POST `/api/:projectId/envelope/`. A legacy
  * `POST /sentry` route is kept for manual testing.
+ *
+ * Upstream forwarding to Sentry ingest runs only when NODE_ENV is production.
  */
 export const sentryRouter = Router();
 
@@ -96,6 +99,19 @@ function decodeEnvelopeBody(
   return body;
 }
 
+export function shouldForwardSentryIngest(nodeEnv: string): boolean {
+  return nodeEnv === "production";
+}
+
+export function isSentryEnvelopeRequest(req: Request): boolean {
+  if (req.method !== "POST") return false;
+  const rawType = req.headers["content-type"];
+  const contentType = Array.isArray(rawType) ? rawType[0] : rawType;
+  return (contentType ?? "")
+    .toLowerCase()
+    .includes("application/x-sentry-envelope");
+}
+
 function dsnFromEnvelope(body: Buffer): string | undefined {
   const headerLine = body.toString("utf8").split("\n")[0]?.trim();
   if (!headerLine) return undefined;
@@ -108,7 +124,7 @@ function dsnFromEnvelope(body: Buffer): string | undefined {
   }
 }
 
-async function handleEnvelope(
+export async function handleEnvelope(
   req: Request,
   res: Response,
   next: NextFunction,
@@ -157,6 +173,11 @@ async function handleEnvelope(
         );
       }
       res.status(403).json({ error: "Invalid envelope project" });
+      return;
+    }
+
+    if (!shouldForwardSentryIngest(env.NODE_ENV)) {
+      res.status(200).end();
       return;
     }
 

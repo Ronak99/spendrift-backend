@@ -8,6 +8,7 @@ import { healthRouter } from "./routes/health.js";
 import { voiceRouter } from "./routes/voice.js";
 import { statementsRouter } from "./routes/statements.js";
 import { receiptsRouter } from "./routes/receipts.js";
+import { messagesRouter } from "./routes/messages.js";
 import { ingestRouter } from "./routes/ingest.js";
 import { sentryRouter } from "./routes/sentry.js";
 
@@ -21,13 +22,14 @@ app.set("trust proxy", 1);
 
 app.use(requestLogger);
 
-// Analytics ingestion proxy: raw passthrough to PostHog. Mounted before JSON
-// body parsing and without bearer auth (PostHog authenticates via the public
-// project key carried in the request body).
+// First-party ingest proxy: PostHog analytics plus production Sentry envelopes
+// (`Content-Type: application/x-sentry-envelope`). Mounted before JSON parsing
+// and without bearer auth.
 app.use("/ingest", ingestRouter);
 
-// Sentry envelope tunnel for iOS diagnostics. SDK posts to /api/:projectId/envelope/
-// when the DSN host is rewritten to the backend. Legacy POST /sentry also works.
+// Sentry envelope tunnel for older iOS builds that POST /api/:projectId/envelope/
+// (SDK default ingest path) and for manual POST /sentry testing. Production
+// builds prefer the /ingest tunnel above. Upstream ingest is production-only.
 app.use(sentryRouter);
 app.use("/sentry", sentryRouter);
 
@@ -42,6 +44,7 @@ app.use("/v1", healthRouter);
 app.use("/v1", requireAuth, voiceRouter);
 app.use("/v1", requireAuth, statementsRouter);
 app.use("/v1", requireAuth, receiptsRouter);
+app.use("/v1", requireAuth, messagesRouter);
 
 if (env.SENTRY_DSN) {
   Sentry.setupExpressErrorHandler(app);

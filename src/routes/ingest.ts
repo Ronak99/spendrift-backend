@@ -1,17 +1,24 @@
 import { Router, raw } from "express";
 import { env } from "../config/env.js";
 import { resolveClientIp } from "../utils/clientIp.js";
+import {
+  handleEnvelope,
+  isSentryEnvelopeRequest,
+} from "./sentry.js";
 
 /**
- * Reverse proxy for PostHog analytics ingestion.
+ * Reverse proxy for first-party ingestion.
  *
- * The iOS app points its PostHog `host` at `<backend>/ingest`, so ingestion
- * traffic and the public project key are funneled through our first-party
- * domain instead of hitting PostHog directly (avoids content-blocker drops and
- * keeps analytics on our infrastructure).
+ * PostHog: the iOS app points its PostHog `host` at `<backend>/ingest`, so
+ * analytics traffic is funneled through our domain instead of hitting PostHog
+ * directly (avoids content-blocker drops and keeps analytics on our
+ * infrastructure). This is NOT an open proxy: the upstream is fixed to
+ * `env.POSTHOG_HOST`; only the path, query string, and body are forwarded.
  *
- * This is NOT an open proxy: the upstream is fixed to `env.POSTHOG_HOST`; only
- * the path, query string, and body are forwarded.
+ * Sentry: production iOS builds set `options.tunnel` to the same `/ingest`
+ * URL and POST envelopes with `Content-Type: application/x-sentry-envelope`.
+ * Those are handed to the Sentry tunnel and forwarded to Sentry ingest only
+ * in production.
  */
 export const ingestRouter = Router();
 
@@ -41,6 +48,11 @@ const HOP_BY_HOP = new Set([
 
 ingestRouter.use(async (req, res, next) => {
   try {
+    if (isSentryEnvelopeRequest(req)) {
+      await handleEnvelope(req, res, next);
+      return;
+    }
+
     const upstreamBase = env.POSTHOG_HOST.replace(/\/+$/, "");
     // Inside the mounted router, req.url is relative to /ingest and keeps the query string.
     const targetUrl = `${upstreamBase}${req.url}`;

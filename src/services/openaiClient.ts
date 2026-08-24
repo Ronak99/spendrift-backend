@@ -15,6 +15,10 @@ import {
   buildReceiptSystemPrompt,
   getReceiptUserInstruction,
 } from "./receiptPrompt.js";
+import {
+  buildMessageSystemPrompt,
+  getMessageUserInstruction,
+} from "./messagePrompt.js";
 import type { CategoryInput } from "../types/voice.js";
 import {
   statementParseResponseSchema,
@@ -25,11 +29,20 @@ import {
   receiptParseResponseSchema,
   type ReceiptParseResponse,
 } from "../types/receipt.js";
+import {
+  messageParseResponseSchema,
+  type MessageInput,
+  type MessageParseResponse,
+} from "../types/message.js";
 import { sanitizeStatementFilename } from "../utils/filename.js";
 
 async function openaiFetch(
   path: string,
-  init: RequestInit & { timeoutMs?: number; feature?: "voice" | "pdf" | "receipt"; model?: string } = {},
+  init: RequestInit & {
+    timeoutMs?: number;
+    feature?: "voice" | "pdf" | "receipt" | "message";
+    model?: string;
+  } = {},
 ): Promise<Response> {
   const { timeoutMs = env.UPSTREAM_TIMEOUT_MS, feature, model, ...rest } = init;
   const controller = new AbortController();
@@ -205,6 +218,61 @@ export async function parseReceiptImage(
     stripMarkdownCodeFence(content),
     receiptParseResponseSchema,
   );
+}
+
+export async function parseTransactionMessages(
+  messages: MessageInput[],
+  categories: CategoryInput[],
+  options: { clientTodayIso?: string; timezone?: string },
+): Promise<MessageParseResponse> {
+  const systemPrompt = buildMessageSystemPrompt(categories, options);
+  const userInstruction = getMessageUserInstruction(messages);
+
+  const res = await openaiFetch("/chat/completions", {
+    method: "POST",
+    feature: "message",
+    model: env.MESSAGE_MODEL,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: env.MESSAGE_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userInstruction },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    await readUpstreamError(res);
+  }
+
+  const completion = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string | null } }>;
+  };
+
+  const content = completion.choices?.[0]?.message?.content?.trim();
+  if (!content) {
+    throw new ApiError(502, "missing_model_output", "Model returned empty content");
+  }
+
+  const payload = parseModelJson(
+    stripMarkdownCodeFence(content),
+    messageParseResponseSchema,
+  );
+
+  // Ensure every input id has a result; fill missing with a terminal error.
+  const byId = new Map(payload.results.map((r) => [r.id, r]));
+  const results = messages.map((message) => {
+    const existing = byId.get(message.id);
+    if (existing) return existing;
+    return {
+      id: message.id,
+      status: "error" as const,
+      reason: "Model omitted this message from the response",
+    };
+  });
+
+  return { results };
 }
 
 function extractResponsesOutputText(data: Record<string, unknown>): string {

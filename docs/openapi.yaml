@@ -29,6 +29,8 @@ tags:
     description: Bank statement PDF → transaction line items
   - name: Receipts
     description: Receipt/payment screenshot image → single structured transaction JSON
+  - name: Messages
+    description: Bank SMS bodies → structured transaction JSON (batched)
 
 security:
   - BearerAuth: []
@@ -57,6 +59,7 @@ paths:
                   voice: gpt-audio-mini
                   statement: gpt-4o
                   receipt: gpt-4o
+                  message: gpt-4o-mini
 
   /v1/voice/parse-transaction:
     post:
@@ -391,6 +394,84 @@ paths:
               schema:
                 $ref: "#/components/schemas/ApiError"
 
+  /v1/messages/parse-transactions:
+    post:
+      operationId: parseTransactionMessages
+      tags: [Messages]
+      summary: Parse bank SMS bodies into transactions
+      description: |
+        Converts one or more bank SMS message bodies into structured transactions.
+        Per-item business failures (`status: "error"`) are returned inside HTTP 200.
+        Rejects promotions, OTPs, reminders, balance enquiries, declined transactions,
+        and reversals when possible.
+
+        **Limits:** at most 40 messages per request; each body max 1000 characters.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MessageParseRequest"
+            example:
+              messages:
+                - id: "msg-1"
+                  body: "INR 450.00 debited from A/c ****1234 at SWIGGY on 24-08-26. Avl bal INR 12,340.50"
+                  capturedAtIso: "2026-08-24T10:15:00"
+              categories:
+                - name: Food
+                  type: expense
+                - name: Salary
+                  type: income
+              clientTodayIso: "2026-08-24T10:15:00"
+              timezone: Asia/Kolkata
+      responses:
+        "200":
+          description: Per-message parse results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageParseResponse"
+              examples:
+                success:
+                  summary: Mixed success and rejection
+                  value:
+                    results:
+                      - id: msg-1
+                        status: success
+                        transaction:
+                          notes: SWIGGY
+                          amount: 450
+                          date: "2026-08-24T10:15:00"
+                          transactionType: expense
+                          category: Food
+                      - id: msg-2
+                        status: error
+                        reason: Promotional offer, not a completed transaction
+        "400":
+          description: Invalid request body or batch size
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "502":
+          description: Upstream AI provider error or invalid model JSON output
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "504":
+          description: Upstream AI provider timeout
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -415,7 +496,7 @@ components:
           example: 1.0.0
         models:
           type: object
-          required: [voice, statement, receipt]
+          required: [voice, statement, receipt, message]
           properties:
             voice:
               type: string
@@ -429,6 +510,10 @@ components:
               type: string
               description: Configured upstream model for receipt image parsing
               example: gpt-4o
+            message:
+              type: string
+              description: Configured upstream model for SMS message parsing
+              example: gpt-4o-mini
 
     CategoryInput:
       type: object
@@ -712,6 +797,109 @@ components:
         mapping:
           success: "#/components/schemas/ReceiptParseSuccessResponse"
           error: "#/components/schemas/ReceiptParseErrorResponse"
+
+    MessageInput:
+      type: object
+      required: [id, body]
+      properties:
+        id:
+          type: string
+          minLength: 1
+          example: msg-1
+        body:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          example: "INR 450.00 debited from A/c ****1234 at SWIGGY on 24-08-26."
+        capturedAtIso:
+          type: string
+          description: Device capture timestamp used as transaction date fallback
+          example: "2026-08-24T10:15:00"
+
+    MessageParseRequest:
+      type: object
+      required: [messages, categories]
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 40
+          items:
+            $ref: "#/components/schemas/MessageInput"
+        categories:
+          type: array
+          items:
+            $ref: "#/components/schemas/CategoryInput"
+        clientTodayIso:
+          type: string
+          example: "2026-08-24T10:15:00"
+        timezone:
+          type: string
+          example: Asia/Kolkata
+
+    MessageTransaction:
+      type: object
+      required: [notes, amount, date, transactionType, category]
+      properties:
+        notes:
+          type: string
+          example: SWIGGY
+        amount:
+          type: number
+          exclusiveMinimum: 0
+          example: 450
+        date:
+          type: string
+          example: "2026-08-24T10:15:00"
+        transactionType:
+          $ref: "#/components/schemas/StatementTransactionType"
+        category:
+          type: string
+          nullable: true
+          example: Food
+
+    MessageParseSuccessItem:
+      type: object
+      required: [id, status, transaction]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [success]
+        transaction:
+          $ref: "#/components/schemas/MessageTransaction"
+
+    MessageParseErrorItem:
+      type: object
+      required: [id, status, reason]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [error]
+        reason:
+          type: string
+
+    MessageParseResultItem:
+      oneOf:
+        - $ref: "#/components/schemas/MessageParseSuccessItem"
+        - $ref: "#/components/schemas/MessageParseErrorItem"
+      discriminator:
+        propertyName: status
+        mapping:
+          success: "#/components/schemas/MessageParseSuccessItem"
+          error: "#/components/schemas/MessageParseErrorItem"
+
+    MessageParseResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/MessageParseResultItem"
 
     ApiErrorBody:
       type: object

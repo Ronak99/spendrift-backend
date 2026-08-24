@@ -25,6 +25,7 @@ const envSchema = z.object({
   VOICE_MODEL: z.string().min(1).default("gpt-audio-mini"),
   STATEMENT_MODEL: z.string().min(1).default("gpt-4o"),
   RECEIPT_MODEL: z.string().min(1).default("gpt-4o"),
+  MESSAGE_MODEL: z.string().min(1).default("gpt-4o-mini"),
   POSTHOG_HOST: z.string().url().default("https://us.i.posthog.com"),
   SENTRY_DSN: z.string().url().optional(),
   SENTRY_TUNNEL_DSN: z.string().url().optional(),
@@ -34,6 +35,8 @@ const envSchema = z.object({
   MAX_PDF_BYTES: z.coerce.number().int().positive().default(20_971_520),
   MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(3_000_000),
   MAX_IMAGE_BYTES: z.coerce.number().int().positive().default(8_388_608),
+  MAX_MESSAGES_PER_REQUEST: z.coerce.number().int().positive().default(40),
+  MAX_MESSAGE_CHARS: z.coerce.number().int().positive().default(1000),
 });
 
 const parsed = envSchema.safeParse(process.env);
