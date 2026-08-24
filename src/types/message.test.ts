@@ -119,7 +119,7 @@ describe("messageParseResponseSchema", () => {
 });
 
 describe("messagePrompt", () => {
-  it("includes rejection guidance and category names", () => {
+  it("includes rejection guidance, lenient acceptance, and category names", () => {
     const prompt = buildMessageSystemPrompt(
       [
         { name: "Food", type: "expense" },
@@ -129,6 +129,9 @@ describe("messagePrompt", () => {
     );
     assert.match(prompt, /OTP/);
     assert.match(prompt, /promotional/i);
+    assert.match(prompt, /Be LENIENT/i);
+    assert.match(prompt, /Dividend credit worth 1200rs/);
+    assert.match(prompt, /Debit of 20 rs/);
     assert.match(prompt, /Food/);
     assert.match(prompt, /Salary/);
     assert.match(prompt, /2026-08-24T09:00:00/);
