@@ -35,16 +35,6 @@ messagesRouter.post("/messages/parse-transactions", async (req, res, next) => {
       );
     }
 
-    for (const message of messages) {
-      if (message.body.length > env.MAX_MESSAGE_CHARS) {
-        throw new ApiError(
-          400,
-          "invalid_request",
-          `Message body exceeds maximum of ${env.MAX_MESSAGE_CHARS} characters`,
-        );
-      }
-    }
-
     const result = await parseTransactionMessages(messages, categories, {
       clientTodayIso,
       timezone,

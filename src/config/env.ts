@@ -36,7 +36,6 @@ const envSchema = z.object({
   MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(3_000_000),
   MAX_IMAGE_BYTES: z.coerce.number().int().positive().default(8_388_608),
   MAX_MESSAGES_PER_REQUEST: z.coerce.number().int().positive().default(40),
-  MAX_MESSAGE_CHARS: z.coerce.number().int().positive().default(1000),
 });
 
 const parsed = envSchema.safeParse(process.env);

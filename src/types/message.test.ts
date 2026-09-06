@@ -47,12 +47,23 @@ describe("messageParseRequestSchema", () => {
     assert.equal(result.success, false);
   });
 
-  it("rejects a body longer than 1000 characters", () => {
+  it("accepts a long body: message bodies are not length-capped", () => {
     const result = messageParseRequestSchema.safeParse({
-      messages: [{ id: "m1", body: "x".repeat(1001) }],
+      messages: [{ id: "m1", body: "x".repeat(5000) }],
       categories: [],
     });
-    assert.equal(result.success, false);
+    assert.equal(result.success, true);
+  });
+
+  it("accepts a body whose UTF-16 length exceeds its character count", () => {
+    // Devanagari clusters and emoji count for more UTF-16 units than Characters.
+    // The old cap counted units server-side and Characters client-side, so bodies
+    // like this were clipped on one side and rejected on the other.
+    const result = messageParseRequestSchema.safeParse({
+      messages: [{ id: "m1", body: "क्षि".repeat(400) }],
+      categories: [],
+    });
+    assert.equal(result.success, true);
   });
 
   it("rejects a missing message id", () => {

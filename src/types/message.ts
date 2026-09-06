@@ -3,7 +3,7 @@ import { categoriesSchema } from "./voice.js";
 
 export const messageInputSchema = z.object({
   id: z.string().min(1),
-  body: z.string().min(1).max(1000),
+  body: z.string().min(1),
   capturedAtIso: z.string().optional(),
 });
 

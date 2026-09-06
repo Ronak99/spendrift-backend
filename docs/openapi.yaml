@@ -405,7 +405,7 @@ paths:
         Rejects promotions, OTPs, reminders, balance enquiries, declined transactions,
         and reversals when possible.
 
-        **Limits:** at most 40 messages per request; each body max 1000 characters.
+        **Limits:** at most 40 messages per request. Message bodies are not length-capped.
       requestBody:
         required: true
         content:
@@ -809,7 +809,6 @@ components:
         body:
           type: string
           minLength: 1
-          maxLength: 1000
           example: "INR 450.00 debited from A/c ****1234 at SWIGGY on 24-08-26."
         capturedAtIso:
           type: string
