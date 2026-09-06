@@ -1,6 +1,6 @@
 import express from "express";
 import { env } from "./config/env.js";
-import { initDiagnostics, Sentry } from "./diagnostics.js";
+import { Sentry } from "./diagnostics.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { requireAuth } from "./middleware/auth.js";
@@ -12,8 +12,8 @@ import { messagesRouter } from "./routes/messages.js";
 import { ingestRouter } from "./routes/ingest.js";
 import { sentryRouter } from "./routes/sentry.js";
 
-initDiagnostics();
-
+// Sentry.init() runs in instrument.ts, loaded via `node --import ./dist/instrument.js`
+// so that express is instrumented before it is imported here.
 const app = express();
 
 // Trust one reverse-proxy hop (Caddy in production) so req.ip is the end-user
