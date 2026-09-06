@@ -4,3 +4,4 @@ dist/
 .env.bak
 *.log
 .DS_Store
+grafana.sh
